@@ -1,0 +1,24 @@
+#!/bin/sh -x
+
+leaf=$1
+netns=$2
+
+trap 'rm -f /tmp/leaf.pid /tmp/leaf.log' EXIT
+ip netns exec $netns $leaf -p /tmp/leaf.pid -l /tmp/leaf.log -u swp32 swp1 swp2 swp3
+[ $? -ne 0 ] && exit 1
+tail -f /tmp/leaf.log&
+
+sleep 1 # wait for pidfile
+
+[ -f /tmp/leaf.pid ] || (echo "leaf.pid has not been created"; exit 1) || exit 1
+[ -f /tmp/leaf.log ] || (echo "leaf.log has not been created"; exit 1) || exit 1
+
+kill -0 `cat /tmp/leaf.pid` || (echo "leaf has died"; exit 1)
+
+kill `cat /tmp/leaf.pid`
+sleep 1
+kill -0 `cat /tmp/leaf.pid` 2>/dev/null
+if [ $? -eq 0 ]; then
+	echo "leaf should have died"
+	exit 1
+fi

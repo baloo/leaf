@@ -1,0 +1,22 @@
+#!/bin/sh -x
+
+leaf=$1
+netns=$2
+
+trap "kill \`cat /tmp/leaf.pid\`; rm -f /tmp/leaf.pid" EXIT
+ip netns exec $netns $leaf -p /tmp/leaf.pid -u swp32 swp1 swp2 swp3
+[ $? -ne 0 ] && exit 1
+set +m
+
+ip netns exec upstream ip link set swp1 down
+sleep 1
+ip netns exec $netns ip link 
+ip netns exec downstream1 ip link 
+ip netns exec downstream1 ip link show swp32 | grep -c -e 'state DOWN' -e 'state LOWERLAYERDOWN' || exit 1
+ip netns exec downstream2 ip link show swp32 | grep -c -e 'state DOWN' -e 'state LOWERLAYERDOWN' || exit 1
+ip netns exec downstream3 ip link show swp32 | grep -c -e 'state DOWN' -e 'state LOWERLAYERDOWN' || exit 1
+
+kill `cat /tmp/leaf.pid`
+sleep 1
+
+
