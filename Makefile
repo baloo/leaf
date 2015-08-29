@@ -34,6 +34,16 @@ SRC-y += src/leaf.c
 
 EXECUTABLE = src/leaf
 
+ifeq      (0,$(shell which clang-format-3.7 >/dev/null 2>/dev/null; echo $$?))
+	CLANG_FORMAT=clang-format-3.7
+else ifeq (0,$(shell which clang-format-3.6 >/dev/null 2>/dev/null; echo $$?))
+	CLANG_FORMAT=clang-format-3.6
+else ifeq (0,$(shell which clang-format >/dev/null 2>/dev/null; echo $$?))
+	CLANG_FORMAT=clang-format
+else
+	CLANG_FORMAT=$(error No clang-format found, please ensure it is available in your $$PATH)
+endif
+
 .PHONY: all
 all: $(EXECUTABLE)
 
@@ -55,7 +65,7 @@ clean:
 
 .PHONY: format
 format:
-	clang-format-3.7 -i */*.h */*.c
+	$(CLANG_FORMAT) -i */*.h */*.c
 
 
 

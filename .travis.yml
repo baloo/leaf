@@ -6,6 +6,7 @@ sudo: required
 language: c
 
 env:
+  - STEP: format
   - BUILDENV:
   - BUILDENV: ubuntu-14.04
   - BUILDENV: debian-wheezy
@@ -14,7 +15,10 @@ env:
   - BUILDENV: debian-sid
 
 matrix:
+  fast_finish: true
   exclude:
+    - compiler: clang
+      env: STEP=format
     - compiler: clang
       env: BUILDENV=ubuntu-14.04
     - compiler: clang
@@ -32,8 +36,9 @@ compiler:
 
 before_script:
   - sudo apt-get update
-  - sudo apt-get install -y libnl-3-200 libnl-route-3-200 liblldpctl-dev libpthread-stubs0-dev libnl-3-dev libnl-route-3-dev libnl-genl-3-dev
+  - sudo apt-get install -y libnl-3-200 libnl-route-3-200 liblldpctl-dev libpthread-stubs0-dev libnl-3-dev libnl-route-3-dev libnl-genl-3-dev clang-format-3.6
 
 script:
-  - if [ "$BUILDENV" = '' ]; then make test; exit $?; fi
+  - if [ "$STEP" = 'format' ]; then make format; git --no-pager diff -- src; if [ `git --no-pager diff -- src| wc -l` != 0 ]; then exit 1; fi; fi
+  - if [ "$STEP" = '' -a "$BUILDENV" = '' ]; then make test; exit $?; fi
   - if [ "$BUILDENV" != '' ]; then make test/envs/$BUILDENV.stamp; exit $?; fi
