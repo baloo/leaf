@@ -5,6 +5,27 @@ sudo: required
 
 language: c
 
+env:
+  - BUILDENV:
+  - BUILDENV: ubuntu-14.04
+  - BUILDENV: debian-wheezy
+  - BUILDENV: debian-jessie
+  - BUILDENV: debian-stretch
+  - BUILDENV: debian-sid
+
+matrix:
+  exclude:
+    - compiler: clang
+      env: BUILDENV=ubuntu-14.04
+    - compiler: clang
+      env: BUILDENV=debian-wheezy
+    - compiler: clang
+      env: BUILDENV=debian-jessie
+    - compiler: clang
+      env: BUILDENV=debian-stretch
+    - compiler: clang
+      env: BUILDENV=debian-sid
+
 compiler:
   - gcc
   - clang
@@ -14,4 +35,5 @@ before_script:
   - sudo apt-get install -y libnl-3-200 libnl-route-3-200 liblldpctl-dev libpthread-stubs0-dev libnl-3-dev libnl-route-3-dev libnl-genl-3-dev
 
 script:
-  - make test
+  - if [ "$BUILDENV" = '' ]; then make test; exit $?; fi
+  - if [ "$BUILDENV" != '' ]; then make test/envs/$BUILDENV.stamp; exit $?; fi

@@ -51,9 +51,18 @@ test: $(EXECUTABLE)
 clean:
 	rm -f $(SRC-o)
 	rm -f $(EXECUTABLE)
+	rm -f test/envs/*.stamp
 
 .PHONY: format
 format:
 	clang-format-3.7 -i */*.h */*.c
 
 
+
+TEST_ENV_STAMPS=$(shell find test/envs/ -type f -name '*.dockerfile' | sed s/dockerfile/stamp/)
+.PHONY: test-envs
+test-envs: $(TEST_ENV_STAMPS)
+
+test/envs/%.stamp: test/envs/%.dockerfile
+	docker build -t leaf-$(shell basename $< .dockerfile) -f $< $(CURDIR)
+	touch $@
