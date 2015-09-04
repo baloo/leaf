@@ -1,15 +1,12 @@
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <semaphore.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/errno.h>
-#include <sys/param.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <unistd.h>
 
 #include "netlink.h"
 #include "lldp.h"
@@ -23,7 +20,7 @@ extern const char *__progname;
 #define __progname "leaf"
 #endif
 
-struct leaf_thread_info {
+struct leaf_info {
 	const char *upstream_iface;
 	state_t upstream_state;
 	struct leaf_netlink *ln_control;
@@ -33,10 +30,10 @@ struct leaf_thread_info {
 	char **leaf_ifaces;
 };
 
-uint8_t signal_received;
+volatile sig_atomic_t signal_received;
 
 static void
-term_signal(__attribute__((unused)) int sig)
+termination_handler(__attribute__((unused)) int sig)
 {
 	signal_received++;
 }
@@ -58,7 +55,7 @@ usage()
 static void
 netlink_cb(const char *ifname, state_t new_state, void *arg)
 {
-	struct leaf_thread_info *lti = arg;
+	struct leaf_info *lti = arg;
 	fprintf(stderr, "debug: netlink_cb(upstream=%s blah=%s state=%d)\n",
 		lti->upstream_iface, ifname, new_state);
 	if (strcmp(lti->upstream_iface, ifname) == 0) {
@@ -86,7 +83,7 @@ lldpd_cb(__attribute__((unused)) struct leaf_lldp *ll, const char *ifname,
 	 __attribute__((unused)) const char *remote_fqdn, state_t new_state,
 	 void *data)
 {
-	struct leaf_thread_info *lti = (struct leaf_thread_info *)data;
+	struct leaf_info *lti = (struct leaf_info *)data;
 
 	if (strcmp(lti->upstream_iface, ifname) == 0) {
 		if (new_state == LINK_UP) {
@@ -103,60 +100,60 @@ lldpd_cb(__attribute__((unused)) struct leaf_lldp *ll, const char *ifname,
 }
 
 static inline int
-loop(const struct leaf_thread_info *lti)
+loop(const struct leaf_info *lti)
 {
 	int netlink_fd, lldp_fd, s = 0;
-	fd_set readset;
+	struct pollfd fds[2];
 
 	netlink_fd = leaf_netlink_fd(lti->ln_watch);
 	lldp_fd = leaf_lldp_fd(lti->ll);
 
-	do {
-		FD_ZERO(&readset);
-		FD_SET(netlink_fd, &readset);
-		FD_SET(lldp_fd, &readset);
+	fds[0].fd = netlink_fd;
+	fds[0].events = POLLIN;
+	fds[1].fd = lldp_fd;
+	fds[1].events = POLLIN;
 
-		s = select(MAX(netlink_fd, lldp_fd) + 1, &readset, NULL, NULL,
-			   NULL);
-	} while (s == -1 && errno == EINTR);
+	s = poll(fds, 2, -1);
+	if (s < 0 && signal_received > 0)
+		return -1;
 
-	if (s > 0) {
-		if (FD_ISSET(netlink_fd, &readset)) {
-			s = leaf_netlink_recv(lti->ln_watch);
-			if (s < 0)
-				return s;
-		}
-
-		if (FD_ISSET(lldp_fd, &readset)) {
-			s = leaf_lldp_recv(lti->ll);
-			if (s < 0)
-				return s;
-		}
-
-		return 0;
-	} else {
-		perror("loop: error select():");
+	if (fds[0].revents & POLLIN) {
+		s = leaf_netlink_recv(lti->ln_watch);
+		if (s < 0)
+			return s;
 	}
 
-	return s;
+	if (fds[1].revents & POLLIN) {
+		s = leaf_lldp_recv(lti->ll);
+		if (s < 0)
+			return s;
+	}
+
+	return 0;
 }
 
 int
-main(const int argc, char *argv[])
+main(int argc, char *argv[])
 {
 	int debug = 1, ch, foreground = 0, s;
-	FILE *pidfile_fp = NULL;
 	char *pidfile = NULL, *logfile = NULL, *lldp_name = NULL;
 	const char *options = "dfhu:p:l:n:";
-	struct leaf_thread_info lti;
+	struct leaf_info lti;
+	struct pidfh *pidfile_fp = NULL;
+	struct sigaction action;
+
+	/* Handle process termination */
+	action.sa_handler = termination_handler;
+	sigemptyset(&action.sa_mask);
+	action.sa_flags = 0;
 
 	signal_received = 0;
 
-	signal(SIGINT, term_signal);
-	signal(SIGTERM, term_signal);
+	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGTERM, &action, NULL);
 
+	/* Parse arguments */
 	lti.upstream_iface = NULL;
-
 	while ((ch = getopt(argc, argv, options)) != -1) {
 		switch (ch) {
 		case 'd':
@@ -188,58 +185,21 @@ main(const int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
+	/* Open pidfile before fork and chdir */
 	if (pidfile != NULL) {
-		if (access(pidfile, F_OK) != -1) {
-			char buf[16];
-			int f, process_exists;
-			ssize_t s;
-			char *endptr = NULL;
-			long int pid;
-			f = open(pidfile, O_RDONLY);
-			if (f < 0) {
-				fprintf(stderr,
-					"fatal: error while opening pidfile");
-				return 1;
-			}
-			s = read(f, buf, sizeof(buf) - 1);
-			if (s == 0) {
-				fprintf(stderr,
-					"fatal: existing pidfile is empty");
-				return 1;
-			}
-			if (s == -1) {
-				fprintf(stderr,
-					"fatal: error while reading pidfile");
-				return 1;
-			}
-			buf[s + 1] = '\0';
-			pid = strtol(buf, &endptr, 10);
-			if (endptr != NULL && buf == endptr) {
-				fprintf(stderr,
-					"fatal: pidfile content is empty\n");
-				return 1;
-			}
-			if (endptr != NULL &&
-			    !(endptr[0] == '\0' || endptr[0] == '\n')) {
-				fprintf(stderr,
-					"fatal: pidfile content is invalid\n");
-				return 1;
-			}
+		int process_exists;
+		pid_t otherpid;
+		pidfile_fp = pidfile_open(pidfile, 0600, &otherpid);
 
-			process_exists = kill(pid, 0);
-			if (process_exists == 0) {
-				fprintf(stderr, "fatal: pidfile points to a "
-						"running process\n");
-				return 1;
-			} else {
-				fprintf(stderr, "info: pidfile points to a "
-						"non-existing process, "
-						"removing.\n");
-				unlink(pidfile);
-			}
+		process_exists = kill(otherpid, 0);
+		if (process_exists == 0) {
+			fprintf(stderr, "fatal: pidfile points to a "
+					"running process\n");
+			return EXIT_FAILURE;
 		}
 	}
 
+	/* stderr is used for logfile */
 	if (logfile != NULL) {
 		close(STDIN_FILENO);
 		if (open("/dev/null", O_RDONLY) == -1) {
@@ -260,48 +220,22 @@ main(const int argc, char *argv[])
 	}
 
 	if (foreground == 0) {
-		pid_t pid = fork();
-		if (pid == -1) {
-			perror("failed to fork while daemonising");
-			return 1;
-		} else if (pid != 0) {
-			return 0;
-		}
-
-		if (setsid() == -1) {
-			perror("failed to become a session leader while "
-			       "daemonising");
-			return 1;
-		}
-
-		signal(SIGHUP, SIG_IGN);
-		pid = fork();
-		if (pid == -1) {
-			perror("failed to fork while daemonising");
-		} else if (pid != 0) {
-			return 0;
-		}
-
+		if (daemon(1, 1))
+			return EXIT_FAILURE;
 		umask(0);
 	}
 
-	if (pidfile != NULL) {
-		pidfile_fp = fopen(pidfile, "w");
-		if (pidfile_fp == NULL) {
-			fprintf(stderr, "fatal: pidfile creation failed");
-			return 1;
-		}
-		if (pidfile_fp != NULL) {
-			pid_t pid;
-			pid = getpid();
-			fprintf(pidfile_fp, "%d", pid);
-			fclose(pidfile_fp);
-		}
+	if (pidfile_fp != NULL) {
+		int err;
+		err = pidfile_write(pidfile_fp) * 2;
+		err += pidfile_close(pidfile_fp);
+		if (err < 0)
+			return EXIT_FAILURE;
 	}
 
-	if (pidfile != NULL) {
+	if (foreground == 0) {
 		if (chdir("/") == -1) {
-			return 1;
+			return EXIT_FAILURE;
 		}
 	}
 
@@ -330,8 +264,9 @@ main(const int argc, char *argv[])
 	lti.leaf_ifaces = argv + optind;
 	lti.leaf_ifaces_n = argc - optind;
 
-	if (leaf_lldp_create(lldp_name, &lti.ll, lldpd_cb, &lti) < 0) {
-		fprintf(stderr, "fatal: creation of lldp context failed\n");
+	if ((s = leaf_lldp_create(lldp_name, &lti.ll, lldpd_cb, &lti)) < 0) {
+		fprintf(stderr, "fatal: creation of lldp context failed(%d)\n",
+			s);
 		goto destroy_netlink_watch;
 	}
 

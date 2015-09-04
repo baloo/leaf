@@ -61,7 +61,7 @@ leaf_netlink_ifaces_set(struct leaf_netlink *ln, int ifaces_n, char **ifaces,
 {
 	struct rtnl_link *link;
 	int ret = 0, i, err;
-	struct nl_cache *cache;
+	struct nl_cache *cache = NULL;
 
 	/* Get cache from netlink */
 	if ((err = rtnl_link_alloc_cache(ln->nl_sk, AF_UNSPEC, &cache)) < 0) {
@@ -83,6 +83,7 @@ leaf_netlink_ifaces_set(struct leaf_netlink *ln, int ifaces_n, char **ifaces,
 				continue;
 			}
 			rtnl_link_change(ln->nl_sk, link, link, 0);
+			rtnl_link_put(link);
 		}
 	}
 
@@ -124,15 +125,11 @@ leaf_netlink_notify_link(struct nl_msg *msg, void *arg)
 	const struct nlmsghdr *msg_hdr;
 
 	msg_hdr = nlmsg_hdr(msg);
-	{
-		switch (msg_hdr->nlmsg_type) {
-		case RTM_SETLINK:
-		case RTM_NEWLINK:
-		case RTM_DELLINK: {
-			nl_msg_parse(msg, netlink_msg_parsed, arg);
-			return 0;
-		}
-		}
+
+	if (msg_hdr->nlmsg_type == RTM_SETLINK ||
+	    msg_hdr->nlmsg_type == RTM_NEWLINK ||
+	    msg_hdr->nlmsg_type == RTM_DELLINK) {
+		nl_msg_parse(msg, netlink_msg_parsed, arg);
 	}
 
 	return 0;
@@ -144,6 +141,7 @@ leaf_netlink_ifaces_exists(struct leaf_netlink *ln, char *const ifaces[],
 {
 	int err, i;
 	struct nl_cache *cache;
+	struct rtnl_link *link;
 
 	/* Get cache from netlink */
 	if ((err = rtnl_link_alloc_cache(ln->nl_sk, AF_UNSPEC, &cache)) < 0) {
@@ -155,10 +153,12 @@ leaf_netlink_ifaces_exists(struct leaf_netlink *ln, char *const ifaces[],
 
 	/* Look into cache */
 	for (i = 0; i < max; i++) {
-		if (rtnl_link_get_by_name(cache, ifaces[i]) == NULL) {
+		if ((link = rtnl_link_get_by_name(cache, ifaces[i])) == NULL) {
 			fprintf(stderr, "err: %s is not a valid iface\n",
 				ifaces[i]);
 			err = -1;
+		} else {
+			rtnl_link_put(link);
 		}
 	}
 
@@ -184,9 +184,6 @@ netlink_setup(struct leaf_netlink *ln)
 	nl_socket_modify_cb(ln->nl_sk, NL_CB_VALID, NL_CB_CUSTOM,
 			    leaf_netlink_notify_link, (void *)ln);
 
-	/* Connect to routing netlink protocol */
-	nl_connect(ln->nl_sk, NETLINK_ROUTE);
-
 	/* Subscribe to link notifications group */
 	nl_socket_add_memberships(ln->nl_sk, RTNLGRP_LINK, 0);
 
@@ -198,19 +195,18 @@ int
 leaf_netlink_create(struct leaf_netlink **ln_p, leaf_netlink_cb *cb, void *data)
 {
 	int err = 0;
-	struct leaf_netlink *ln;
+	struct leaf_netlink *ln = NULL;
 
-	ln = malloc(sizeof(struct leaf_netlink));
+	ln = calloc(1, sizeof(struct leaf_netlink));
 	if (ln == NULL) {
 		return -1;
 	}
-	bzero(ln, sizeof(struct leaf_netlink));
 
 	/* Allocate a new socket */
 	ln->nl_sk = nl_socket_alloc();
 	if (ln->nl_sk == NULL) {
 		err = -1;
-		goto leaf_netlink_create_free;
+		goto socket_free;
 	}
 
 	ln->cb = cb;
@@ -218,7 +214,7 @@ leaf_netlink_create(struct leaf_netlink **ln_p, leaf_netlink_cb *cb, void *data)
 
 	if ((err = nl_connect(ln->nl_sk, NETLINK_ROUTE)) < 0) {
 		nl_perror(err, "Unable to connect socket");
-		goto leaf_netlink_create_socket_free;
+		goto socket_free;
 	}
 
 	if (cb != NULL)
@@ -227,11 +223,11 @@ leaf_netlink_create(struct leaf_netlink **ln_p, leaf_netlink_cb *cb, void *data)
 	*ln_p = ln;
 	return 0;
 
-leaf_netlink_create_socket_free:
-	if (ln->nl_sk != NULL)
+socket_free:
+
+	if (ln && ln->nl_sk != NULL)
 		nl_socket_free(ln->nl_sk);
 
-leaf_netlink_create_free:
 	free(ln);
 
 	*ln_p = NULL;
@@ -246,9 +242,7 @@ leaf_netlink_free(struct leaf_netlink *ln)
 
 	if (ln->nl_sk != NULL) {
 		nl_socket_free(ln->nl_sk);
-		ln->nl_sk = NULL;
 	}
 
 	free(ln);
-	ln = NULL;
 }

@@ -1,9 +1,6 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <strings.h>
-#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -23,7 +20,7 @@ struct leaf_lldp {
 static int
 lldpd_connect(const char *sock_path)
 {
-	int s;
+	int s /*, flags*/;
 	struct sockaddr_un su;
 
 	if ((s = socket(PF_UNIX, SOCK_STREAM, 0)) == -1)
@@ -37,6 +34,7 @@ lldpd_connect(const char *sock_path)
 		close(s);
 		return -1;
 	}
+
 	return s;
 }
 
@@ -51,22 +49,14 @@ lldpd_recv(__attribute__((unused)) lldpctl_conn_t *conn, const uint8_t *data,
 	if (ll == NULL)
 		return LLDPCTL_ERR_CANNOT_CONNECT;
 
-	if (ll->fd == -1 && ((ll->fd = lldpd_connect(ll->sock_path)) == -1)) {
-		return LLDPCTL_ERR_CANNOT_CONNECT;
-	}
-
 	remain = length;
-	do {
-		if ((nb = read(ll->fd, (uint8_t *)data + offset, remain)) ==
-		    -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK ||
-			    errno == EINTR)
-				return LLDPCTL_ERR_WOULDBLOCK;
-			return LLDPCTL_ERR_CALLBACK_FAILURE;
-		}
-		remain -= nb;
-		offset += nb;
-	} while (remain > 0 && nb != 0);
+	if ((nb = read(ll->fd, (uint8_t *)data + offset, remain)) == -1) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return LLDPCTL_ERR_WOULDBLOCK;
+		return LLDPCTL_ERR_EOF;
+	}
+	remain -= nb;
+	offset += nb;
 
 	return offset;
 }
@@ -80,10 +70,6 @@ lldpd_send(__attribute__((unused)) lldpctl_conn_t *conn, const uint8_t *data,
 
 	if (ll == NULL)
 		return LLDPCTL_ERR_CANNOT_CONNECT;
-
-	if (ll->fd == -1 && ((ll->fd = lldpd_connect(ll->sock_path)) == -1)) {
-		return LLDPCTL_ERR_CANNOT_CONNECT;
-	}
 
 	while ((nb = write(ll->fd, data, length)) == -1) {
 		if (errno == EAGAIN || errno == EINTR)
@@ -111,24 +97,13 @@ leaf_lldp_fd(struct leaf_lldp *ll)
 int
 leaf_lldp_recv(struct leaf_lldp *ll)
 {
-	int s, available;
+	int s;
 	uint8_t buf[4096];
 
-	if (ioctl(ll->fd, FIONREAD, &available) < 0) {
+	s = read(ll->fd, &buf, 4096);
+	s = lldpctl_recv(ll->lldp, (uint8_t *)&buf, s);
+	if (s < 0)
 		return -1;
-	}
-
-	do {
-		if (available > 4096)
-			s = read(ll->fd, &buf, 4096);
-		else
-			s = read(ll->fd, &buf, available);
-
-		available -= s;
-		s = lldpctl_recv(ll->lldp, (uint8_t *)&buf, s);
-		if (s < 0)
-			return -1;
-	} while (available > 0);
 
 	return 0;
 }
@@ -138,7 +113,7 @@ watch_callback(__attribute__((unused)) lldpctl_conn_t *conn,
 	       __attribute__((unused)) lldpctl_change_t type,
 	       lldpctl_atom_t *iface, lldpctl_atom_t *neighbor, void *data)
 {
-	struct leaf_lldp *ll = data;
+	struct leaf_lldp *ll = (struct leaf_lldp *)data;
 	const char *local_iface_name, *remote_iface_name, *remote_fqdn;
 	state_t state = LINK_UNKNOWN;
 
@@ -170,11 +145,10 @@ leaf_lldp_create(const char *ctlname, struct leaf_lldp **ll_p,
 	int err;
 	struct leaf_lldp *ll;
 
-	ll = malloc(sizeof(struct leaf_lldp));
+	ll = calloc(1, sizeof(struct leaf_lldp));
 	if (ll == NULL) {
 		return -1;
 	}
-	bzero(ll, sizeof(struct leaf_lldp));
 
 	ll->fd = -1;
 	ll->cb = cb;
@@ -185,24 +159,28 @@ leaf_lldp_create(const char *ctlname, struct leaf_lldp **ll_p,
 	else
 		ll->sock_path = lldpctl_get_default_transport();
 
-	ll->lldp =
-	    lldpctl_new_name(ll->sock_path, lldpd_send, lldpd_recv, (void *)ll);
+	ll->lldp = lldpctl_new_name(ll->sock_path, lldpd_send, lldpd_recv, ll);
 	if (ll->lldp == NULL) {
 		err = -1;
-		goto free;
+		goto fail;
+	}
+
+	if ((ll->fd = lldpd_connect(ll->sock_path)) == -1) {
+		err = -2;
+		goto fail;
 	}
 
 	if (lldpctl_watch_callback(ll->lldp, watch_callback, ll) < 0) {
 		/* FIXME log warn "unable to watch for neighbors. %s"
 		 * lldpctl_last_strerror(ll->lldp) */
-		err = -2;
-		goto free;
+		err = -3;
+		goto fail;
 	}
 
 	*ll_p = ll;
 	return 0;
 
-free:
+fail:
 	free(ll);
 	return err;
 }
@@ -215,9 +193,7 @@ leaf_lldp_free(struct leaf_lldp *ll)
 
 	if (ll->lldp != NULL) {
 		lldpctl_release(ll->lldp);
-		ll->lldp = NULL;
 	}
 
 	free(ll);
-	ll = NULL;
 }
