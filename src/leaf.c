@@ -100,7 +100,7 @@ lldpd_cb(__attribute__((unused)) struct leaf_lldp *ll, const char *ifname,
 }
 
 static inline int
-loop(const struct leaf_info *lti)
+loop(struct leaf_info *lti)
 {
 	int netlink_fd, lldp_fd, s = 0;
 	struct pollfd fds[2];
@@ -117,18 +117,25 @@ loop(const struct leaf_info *lti)
 	if (s < 0 && signal_received > 0)
 		return -1;
 
-	if (fds[0].revents & POLLIN) {
+	switch (fds[0].revents) {
+	case POLLIN:
 		s = leaf_netlink_recv(lti->ln_watch);
 		if (s < 0)
 			return s;
 	}
 
-	if (fds[1].revents & POLLIN) {
+	switch (fds[1].revents) {
+	case POLLIN:
 		s = leaf_lldp_recv(lti->ll);
 		if (s < 0)
 			return s;
+	case POLLHUP:
+		leaf_lldp_close_fd(lti->ll);
+	case POLLERR:
+	case POLLNVAL:
+		leaf_lldp_mark_closed_fd(lti->ll);
+		break;
 	}
-
 	return 0;
 }
 
@@ -201,42 +208,37 @@ main(int argc, char *argv[])
 
 	/* stderr is used for logfile */
 	if (logfile != NULL) {
-		close(STDIN_FILENO);
-		if (open("/dev/null", O_RDONLY) == -1) {
-			perror("failed to reopen stdin while daemonising");
+		int fd;
+		if ((fd = open("/dev/null", O_RDWR)) == -1) {
+			perror("failed to open /dev/null");
 			return 1;
 		}
-		close(STDOUT_FILENO);
-		if (open("/dev/null", O_WRONLY) == -1) {
-			perror("failed to reopen stdout while daemonising");
+		dup2(fd, STDIN_FILENO);
+		dup2(fd, STDOUT_FILENO);
+		if (fd > 2)
+			close(fd);
+		if ((fd = open(logfile, O_WRONLY | O_APPEND | O_CREAT,
+			       S_IRWXU)) == -1) {
+			perror("failed to open logfile while daemonising");
 			return 1;
 		}
-		close(STDERR_FILENO);
-		if (open(logfile, O_WRONLY | O_APPEND | O_CREAT, S_IRWXU) ==
-		    -1) {
-			perror("failed to reopen stderr while daemonising");
-			return 1;
-		}
+		dup2(fd, STDERR_FILENO);
+		if (fd > 2)
+			close(fd);
 	}
 
 	if (foreground == 0) {
-		if (daemon(1, 1))
+		if (daemon(0, 1))
 			return EXIT_FAILURE;
 		umask(0);
 	}
 
 	if (pidfile_fp != NULL) {
 		int err;
-		err = pidfile_write(pidfile_fp) * 2;
+		err = pidfile_write(pidfile_fp);
 		err += pidfile_close(pidfile_fp);
 		if (err < 0)
 			return EXIT_FAILURE;
-	}
-
-	if (foreground == 0) {
-		if (chdir("/") == -1) {
-			return EXIT_FAILURE;
-		}
 	}
 
 	if (leaf_netlink_create(&lti.ln_control, NULL, NULL) < 0) {

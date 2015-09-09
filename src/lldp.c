@@ -44,21 +44,17 @@ lldpd_recv(__attribute__((unused)) lldpctl_conn_t *conn, const uint8_t *data,
 {
 	struct leaf_lldp *ll = (struct leaf_lldp *)user_data;
 	ssize_t nb;
-	size_t remain, offset = 0;
 
 	if (ll == NULL)
 		return LLDPCTL_ERR_CANNOT_CONNECT;
 
-	remain = length;
-	if ((nb = read(ll->fd, (uint8_t *)data + offset, remain)) == -1) {
+	if ((nb = read(ll->fd, (uint8_t *)data, length)) == -1) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
 			return LLDPCTL_ERR_WOULDBLOCK;
 		return LLDPCTL_ERR_EOF;
 	}
-	remain -= nb;
-	offset += nb;
 
-	return offset;
+	return nb;
 }
 
 static ssize_t
@@ -71,9 +67,7 @@ lldpd_send(__attribute__((unused)) lldpctl_conn_t *conn, const uint8_t *data,
 	if (ll == NULL)
 		return LLDPCTL_ERR_CANNOT_CONNECT;
 
-	while ((nb = write(ll->fd, data, length)) == -1) {
-		if (errno == EAGAIN || errno == EINTR)
-			continue;
+	if ((nb = write(ll->fd, data, length)) == -1) {
 		return LLDPCTL_ERR_CALLBACK_FAILURE;
 	}
 
@@ -94,6 +88,25 @@ leaf_lldp_fd(struct leaf_lldp *ll)
 	return -1;
 }
 
+void
+leaf_lldp_close_fd(struct leaf_lldp *ll)
+{
+	if (ll != NULL) {
+		if (ll->fd == -1) {
+			close(ll->fd);
+			ll->fd = -1;
+		}
+	}
+}
+
+void
+leaf_lldp_mark_closed_fd(struct leaf_lldp *ll)
+{
+	if (ll != NULL) {
+		ll->fd = -1;
+	}
+}
+
 int
 leaf_lldp_recv(struct leaf_lldp *ll)
 {
@@ -101,7 +114,12 @@ leaf_lldp_recv(struct leaf_lldp *ll)
 	uint8_t buf[4096];
 
 	s = read(ll->fd, &buf, 4096);
-	s = lldpctl_recv(ll->lldp, (uint8_t *)&buf, s);
+	if (s < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return 0;
+		return -1;
+	}
+	s = lldpctl_recv(ll->lldp, buf, s);
 	if (s < 0)
 		return -1;
 
