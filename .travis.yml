@@ -39,6 +39,8 @@ before_script:
   - sudo apt-get install -y libnl-3-200 libnl-route-3-200 liblldpctl-dev libnl-3-dev libnl-route-3-dev libnl-genl-3-dev clang-format-3.6 libbsd-dev
 
 script:
+  - ./autogen.sh
+  - ./configure
   - if [ "$STEP" = 'format' ]; then make format; git --no-pager diff -- src; if [ `git --no-pager diff -- src| wc -l` != 0 ]; then exit 1; fi; fi
   - if [ "$STEP" = '' -a "$BUILDENV" = '' ]; then make test; exit $?; fi
   - if [ "$BUILDENV" != '' ]; then make test/envs/$BUILDENV.stamp; exit $?; fi

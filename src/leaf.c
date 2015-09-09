@@ -1,4 +1,3 @@
-
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -7,6 +6,9 @@
 #include <string.h>
 #include <sys/errno.h>
 #include <unistd.h>
+#include <bsd/libutil.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #include "netlink.h"
 #include "lldp.h"
@@ -38,8 +40,9 @@ termination_handler(__attribute__((unused)) int sig)
 	signal_received++;
 }
 
+static void usage(void) __attribute__((noreturn));
 static void
-usage()
+usage(void)
 {
 	fprintf(stderr, "Usage:   %s [OPTIONS ...] [LEAF IFACES ...]\n",
 		__progname);
