@@ -9,7 +9,6 @@ env:
   - STEP: format
   - BUILDENV:
   - BUILDENV: ubuntu-14.04
-  - BUILDENV: debian-wheezy
   - BUILDENV: debian-jessie
   - BUILDENV: debian-stretch
   - BUILDENV: debian-sid
@@ -21,8 +20,6 @@ matrix:
       env: STEP=format
     - compiler: clang
       env: BUILDENV=ubuntu-14.04
-    - compiler: clang
-      env: BUILDENV=debian-wheezy
     - compiler: clang
       env: BUILDENV=debian-jessie
     - compiler: clang
